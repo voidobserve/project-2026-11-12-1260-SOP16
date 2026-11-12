@@ -1,6 +1,5 @@
 #include "include.h"
 #include "main.h"
-#include <math.h>
 #include <stdio.h>
 
 #include "user_config.h"
@@ -12,6 +11,8 @@ extern u16 adc1_val;
 
 // 输出占空比100%时，对应的占空比参数
 #define MAX_DUTY (6000)
+// 开机缓启动时长：0-100% 固定 3s（需求指定）
+#define PWR_ON_RAMP_MS 3000
 #define PER_DUTY (10) //
 #define _75_DUTY 4500 // 75%亮度
 #define _70_DUTY 4200
@@ -54,6 +55,7 @@ typedef struct
 
 u8 cap_10ms_cnt; // 10ms获取一次捕获占空比
 u8 pwr_on_cnt;
+static u32 pwr_on_ramp_acc; // 开机缓启动计时(ms)，配合 pwr_on_cnt 累加
 u16 c_duty = 0;      // 当前设置的占空比
 u32 pwm_in_duty = 0; // 三合一PWM输入的占空比
 u32 pwm_in_duty_xuwei = 0;
@@ -65,7 +67,6 @@ l_pwr_t l_pwr;
 _3_1_t _3_1;
 bit dly_pwr_on = 0;
 u8 dly_pwr_on_cnt = 0;
-bit is_pwr_down = 0; // 1：正在降功率，调用缓升缓降逻辑
 
 /*
     标志位
@@ -238,7 +239,6 @@ void ex_temp_adjust_timer() // 过温降功率 定时判断 每秒执行一次
             // extemp_flag=0;
         }
     }
-    is_pwr_down = 1;
 }
 
 void set_pwm_duty(void)
@@ -358,18 +358,14 @@ void cmp_duty(void)
     }
 }
 
-// 上电led缓慢启动
-// 每10ms执行一次，c_duty每次+30
-float gamma = 1;
 void debug_putchar(u8 uart_data);
 
-// 1ms调用一次     LIN 改 加入电位器判断
+// 开机缓启动：1ms 调用一次，0 -> 目标占空比在 PWR_ON_RAMP_MS 内线性均匀上升
 void led_pwr_on(void)
 {
-    static float step = 70;
-    static float mi; // 幂
-    static float r_ms = 0;
     if (0 == (led_state == LED_PWR_ON && simple_over == 1)) {
+        pwr_on_cnt = 0;
+        pwr_on_ramp_acc = 0; // 非缓启动阶段清零，保证下次上电从 0 开始
         return;
     }
 
@@ -391,32 +387,14 @@ void led_pwr_on(void)
         }
     }
 
-    if (_3_1.en == 1) {
-        /*
-            如果5脚悬空，没有接0R的下拉电阻，直接设置目标占空比
-            跳过开机缓启动
-        */
-
-        c_duty = pwm_in_duty;
-        led_state = LED_NULL;
-        set_pwm_duty();
-        return;
-    }
-
-    r_ms = step / 12;
-    if (r_ms < 1)
-        r_ms = 10;
-    if (pwr_on_cnt < r_ms)
-        return; // 时间未到不调整
+    pwr_on_ramp_acc += pwr_on_cnt; // 1ms 节拍累计缓启动时间
     pwr_on_cnt = 0;
-    if (c_duty < pwm_in_duty) {
-        mi = (step - 1) / (253 / 3) - 1;
-        step += 0.5;
-        c_duty = pow(5, mi) * 60;
-    }
-    if (c_duty >= pwm_in_duty) {
+    if (pwr_on_ramp_acc >= PWR_ON_RAMP_MS) {
         c_duty = pwm_in_duty;
         led_state = LED_NULL;
+    } else {
+        // 线性均匀上升：固定 PWR_ON_RAMP_MS 内从 0 到目标占空比
+        c_duty = (u16)((u32)pwm_in_duty * pwr_on_ramp_acc / PWR_ON_RAMP_MS);
     }
 
     set_pwm_duty();
@@ -428,30 +406,8 @@ void led_plus(void)
         return;
     }
 
-    if (_3_1.en == 1) {
-        // 如果5脚悬空，没有接0R的下拉电阻，直接设置目标占空比
-        c_duty = pwm_in_duty;
-        gamma = c_duty;
-        led_state = LED_NULL;
-        is_pwr_down = 0;
-        set_pwm_duty();
-        return;
-    }
-
-    if (c_duty < pwm_in_duty) {
-        if (is_pwr_down) {
-            // 缓慢升降
-            c_duty += 1;
-        } else {
-            c_duty += 10;
-        }
-    } else if (c_duty >= pwm_in_duty) {
-        c_duty = pwm_in_duty;
-        led_state = LED_NULL;
-        gamma = c_duty;
-        is_pwr_down = 0; // 完成缓慢升降
-    }
-
+    c_duty = pwm_in_duty; // 屏蔽缓升，直接输出目标占空比
+    led_state = LED_NULL;
     set_pwm_duty();
 }
 
@@ -460,34 +416,8 @@ void led_sub(void)
     if (led_state != LED_ADJ_S)
         return;
 
-    if (_3_1.en == 1) {
-        // 如果 5脚悬空，没有接0R的下拉电阻，直接设置目标占空比
-        c_duty = pwm_in_duty;
-        gamma = c_duty;
-        led_state = LED_NULL;
-        is_pwr_down = 0;
-        set_pwm_duty();
-        return;
-    }
-
-    if (c_duty > pwm_in_duty) {
-        if (is_pwr_down) {
-            c_duty -= 1;
-        } else {
-            if (c_duty > 50) {
-
-                c_duty -= 10;
-            } else {
-                c_duty -= 1;
-            }
-        }
-    } else if (c_duty <= pwm_in_duty) {
-        c_duty = pwm_in_duty;
-        gamma = c_duty;
-        is_pwr_down = 0; // 完成缓慢升降
-        led_state = LED_NULL;
-    }
-
+    c_duty = pwm_in_duty; // 屏蔽缓降，直接输出目标占空比
+    led_state = LED_NULL;
     set_pwm_duty();
 }
 
@@ -629,13 +559,11 @@ void l_pwr_timer_handler(void)
                         max_duty = limited_pwm_duty_val_by_knob / 100 * 75;
                         l_pwr.act = 1; // 降功率状态
                         l_pwr.en = 0;  // 处理完成，使能降功率
-                        is_pwr_down = 1;
                     }
                 } else {
                     max_duty = limited_pwm_duty_val_by_knob / 100 * 75;
                     l_pwr.act = 1; // 降功率状态
                     l_pwr.en = 0;  // 处理完成，使能降功率
-                    is_pwr_down = 1;
                 }
             }
 
@@ -648,13 +576,11 @@ void l_pwr_timer_handler(void)
                         max_duty = _75_DUTY;
                         l_pwr.act = 1; // 降功率状态
                         l_pwr.en = 0;  // 处理完成，使能降功率
-                        is_pwr_down = 1;
                     }
                 } else {
                     max_duty = _75_DUTY;
                     l_pwr.act = 1; // 降功率状态
                     l_pwr.en = 0;  // 处理完成，使能降功率
-                    is_pwr_down = 1;
                 }
             }
             l_pwr.en = 0;
@@ -712,7 +638,6 @@ void t_ctrl_timer_handler(void)
             if (t_ctrl.t >= (p_list[t_ctrl.level].t * 60 * 60)) // 改成10s
             {
                 t_ctrl.level++;
-                is_pwr_down = 1;
                 t_ctrl.t = 0;
                 max_duty = p_list[t_ctrl.level].b;
                 extemp_tctrl_flag = 1;
@@ -786,7 +711,6 @@ void dly_pwr_on_handler(void)
             pwm_in_duty = 0;
             ex_temp_en = 0;
             adjust_en = 0;
-            gamma = 2;
             option_fun();
 
             led_state = LED_PWR_ON;
@@ -819,5 +743,4 @@ void flag_init()
     pwm_in_duty = 0;
     ex_temp_en = 0;
     adjust_en = 0;
-    gamma = 2;
 }
