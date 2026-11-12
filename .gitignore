@@ -1,0 +1,43 @@
+# ---- Keil 编译中间文件 / 输出 ----
+Project/Keil/Release/
+Project/Keil/Objects/
+Project/Keil/Listings/
+Project/Keil/Build/
+Project/Keil/Output/
+*.obj
+*.o
+*.lst
+*.m51
+*.lnp
+*.iex
+*.crf
+*.d
+*.dep
+*.axf
+*.elf
+*.map
+*.hex
+*.bin
+*.exe
+*.build_log.htm
+*.uvgui.*
+*.uvguix.*
+*.bak
+*.bat
+*.tmp
+
+# ---- Keil / 插件日志 ----
+Project/Keil/.vscode/*.log
+Project/Keil/.vscode/*.log.lock
+Project/Keil/TXLinkLog.txt
+*.log
+
+# ---- 其他 ----
+*.lnk
+
+# ---- 发布固件（需纳入版本管理）----
+!烧录程序/
+!烧录程序/**
+
+# agents文件
+.agents/
